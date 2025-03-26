@@ -1,0 +1,2 @@
+_target_: lib.replayBuffer.BaseReplayBuffer
+capacity: 10000

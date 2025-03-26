@@ -1,0 +1,3 @@
+_target_: lib.environment.BaseEnvironment
+env_name: 'CartPole-v1'
+screen_width: 600

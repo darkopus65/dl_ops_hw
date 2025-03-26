@@ -1,0 +1,4 @@
+_target_: lib.model.DQN
+kernel_size: 5
+stride: 2
+n_actions: 2
