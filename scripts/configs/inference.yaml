@@ -1,0 +1,11 @@
+defaults:
+  - model: dqn
+  - environment: BaseEnvironment
+  - rl_agent: InferencedBasicDQNAgent
+  - replayBuffer: BaseReplayBuffer
+  - _self_
+inferencer:
+  device: auto
+  save_path: "saved"
+  seed: 1
+  from_pretrained: "saved/testing/model_best.pth"

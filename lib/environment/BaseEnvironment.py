@@ -11,6 +11,7 @@ class BaseEnvironment(object):
         self.x_threshold = self.env.x_threshold
         self.state = self.env.state
         self.screen_width = screen_width
+        self.device = None
 
     def render(self):
         return self.env.render()
@@ -54,6 +55,6 @@ class BaseEnvironment(object):
         return int(self.env.state[0] * scale + self.screen_width / 2.0)  # MIDDLE OF CART
 
     def resize(self, img):
-        T.Compose([T.ToPILImage(),
+        return T.Compose([T.ToPILImage(),
         T.Resize(40, interpolation=Image.BICUBIC),
-        T.ToTensor()])
+        T.ToTensor()])(img)

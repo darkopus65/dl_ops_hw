@@ -13,14 +13,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 @hydra.main(version_base=None, config_path="configs", config_name="baseline")
 def main(config):
-    """
-    Main script for training. Instantiates the model, optimizer, scheduler,
-    metrics, logger, writer, and dataloaders. Runs Trainer to train and
-    evaluate the model.
-
-    Args:
-        config (DictConfig): hydra experiment config.
-    """
     set_random_seed(config.trainer.seed)
 
     project_config = OmegaConf.to_container(config)
@@ -33,34 +25,36 @@ def main(config):
         device = config.trainer.device
 
     env = instantiate(config.environment)
+    env.device = device
 
-    agent = instantiate(config.agent)
+    policy_net = instantiate(config.model).to(device)
+    logger.info(policy_net)
+    target_net = instantiate(config.model).to(device)
+    target_net.load_state_dict(policy_net.state_dict())
+    target_net.eval()
+    logger.info(target_net)
 
-    raplay_buffer = instantiate(config.raplay_buffer)
+    rl_agent = instantiate(config.rl_agent)
 
-    # logger.info(model)
+    rl_agent.policy_net = policy_net
+    rl_agent.target_net = target_net
 
-    # get function handles of loss and metrics
-    # loss_function = instantiate(config.loss_function).to(device)
-    # metrics = instantiate(config.metrics)
+    replayBuffer = instantiate(config.replayBuffer)
 
-    # build optimizer, learning rate scheduler
-    # trainable_params = filter(lambda p: p.requires_grad, model.parameters())
-    optimizer = instantiate(config.optimizer)
-    # lr_scheduler = instantiate(config.lr_scheduler, optimizer=optimizer)
+    optimizer = instantiate(config.optimizer, params=rl_agent.parameters())
 
-    # epoch_len = number of iterations for iteration-based training
-    # epoch_len = None or len(dataloader) for epoch-based training
-    epoch_len = config.trainer.get("epoch_len")
+    n_epochs = config.trainer.get("n_epochs")
 
     trainer = BaseTrainer(
-        agent=agent,
+        agent=rl_agent,
         env=env,
-        memory=raplay_buffer,
+        memory=replayBuffer,
         optimizer=optimizer,
         config=config,
         device=device,
         logger=logger,
+        writer=writer,
+        n_epochs=n_epochs,
     )
 
     trainer.train()

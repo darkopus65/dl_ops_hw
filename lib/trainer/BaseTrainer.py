@@ -4,10 +4,11 @@ import torch
 import torch.nn.functional as F
 from lib.logger import plot_durations
 from lib.utils.data_types import Transition
+from lib.utils.io_utils import ROOT_PATH
 
 
 class BaseTrainer:
-    def __init__(self, agent, env, memory, optimizer, config, device, logger, epoch_len=None):
+    def __init__(self, agent, env, memory, optimizer, config, device, logger, writer, n_epochs=None):
         self.is_train = True
         self.agent = agent
         self.env = env
@@ -17,17 +18,19 @@ class BaseTrainer:
 
         self.device = device
         self.logger = logger
-        self.epoch_len = epoch_len
-        self.env = None
-        self.agent = None
+        self.writer = writer
         self.memory = memory
-        self.BATCH_SIZE = self.config.batch_size
-        self.TARGET_UPDATE = self.config.target_update
-        self.GAMMA = self.config.gamma
-        self.checkpoint_dir = self.config.save_dir
+        self.BATCH_SIZE = self.config.trainer.batch_size
+        self.TARGET_UPDATE = self.config.trainer.target_update
+        self.GAMMA = self.config.trainer.gamma
 
+        self.n_epochs = n_epochs
         self._last_epoch = 0
         self.episode_durations = []
+
+        self.checkpoint_dir = (
+                ROOT_PATH / config.trainer.save_dir / config.writer.run_name
+        )
 
     def train(self):
         """
@@ -37,24 +40,23 @@ class BaseTrainer:
             self._train_process()
         except KeyboardInterrupt as e:
             self.logger.info("Saving model on keyboard interrupt")
-            self._save_checkpoint(self._last_epoch, save_best=False)
+            self._save_checkpoint(self._last_epoch)
             raise e
 
     def _train_process(self):
-        num_episodes = 50
-        for i_episode in range(num_episodes):
-            # Initialize the environment and state
+        for i_episode in range(self.n_epochs):
+            self.writer.set_step(i_episode)
+            self.writer.add_scalar("epoch", i_episode)
+            self._last_epoch = i_episode
             self.env.reset()
             last_screen = self.env.get_screen()
             current_screen = self.env.get_screen()
             state = current_screen - last_screen
             for t in count():
-                # Select and perform an action
                 action = self.agent.select_action(state)
                 reward, done = self.env.step(action.item())
                 reward = torch.tensor([reward], device=self.device)
 
-                # Observe new state
                 last_screen = current_screen
                 current_screen = self.env.get_screen()
                 if not done:
@@ -62,31 +64,28 @@ class BaseTrainer:
                 else:
                     next_state = None
 
-                # Store the transition in memory
                 self.memory.push(state, action, next_state, reward)
 
-                # Move to the next state
                 state = next_state
 
-                # Perform one step of the optimization (on the target network)
-                self.optimize_model()
+                self.optimize_model(i_episode)
                 if done:
                     self.episode_durations.append(t + 1)
+                    self.writer.add_scalar("durations", self.episode_durations[-1])
                     plot_durations(self.episode_durations)
                     break
-            # Update the target network
+
             if i_episode % self.TARGET_UPDATE == 0:
                 self.agent.target_net.load_state_dict(self.agent.policy_net.state_dict())
+                self._save_checkpoint(i_episode)
 
-    def optimize_model(self):
+    def optimize_model(self, episode):
         if len(self.memory) < self.BATCH_SIZE:
             return
         transitions = self.memory.sample(self.BATCH_SIZE)
-        # Transpose the batch (see http://stackoverflow.com/a/19343/3343043 for
-        # detailed explanation).
+
         batch = Transition(*zip(*transitions))
 
-        # Compute a mask of non-final states and concatenate the batch elements
         non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
                                                 batch.next_state)), device=self.device, dtype=torch.uint8)
         non_final_next_states = torch.cat([s for s in batch.next_state
@@ -95,43 +94,58 @@ class BaseTrainer:
         action_batch = torch.cat(batch.action)
         reward_batch = torch.cat(batch.reward)
 
-        # Compute Q(s_t, a) - the model computes Q(s_t), then we select the
-        # columns of actions taken
         state_action_values = self.agent.policy_net(state_batch).gather(1, action_batch)
 
-        # Compute V(s_{t+1}) for all next states.
         next_state_values = torch.zeros(self.BATCH_SIZE, device=self.device)
         next_state_values[non_final_mask] = self.agent.target_net(non_final_next_states).max(1)[0].detach()
-        # Compute the expected Q values
+
         expected_state_action_values = (next_state_values * self.GAMMA) + reward_batch
 
-        # Compute Huber loss
         loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
 
-        # Optimize the model
+        self.logger.debug(
+            "Train Epoch: {}, Loss: {:.6f}".format(
+                episode,loss
+            )
+        )
+        self.writer.add_scalar(
+            "Loss", loss
+        )
+
+
         self.optimizer.zero_grad()
         loss.backward()
-        for param in self.agent.policy_net.parameters():
+        for param in self.agent.parameters():
             param.grad.data.clamp_(-1, 1)
         self.optimizer.step()
-    def _save_checkpoint(self, epoch, save_best=True, only_best=False):
-        arch = type(self.model).__name__
+    def _save_checkpoint(self, epoch):
+        env = type(self.env).__name__
         state = {
-            "arch": arch,
+            "env": env,
+            "agent": self.agent,
+            "policy_net": self.agent.policy_net.state_dict(),
+            "target_net": self.agent.target_net.state_dict(),
             "epoch": epoch,
-            "state_dict": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "config": self.config,
+            "buffer": self.memory,
         }
         filename = str(self.checkpoint_dir / f"checkpoint-epoch{epoch}.pth")
-        if not (only_best and save_best):
-            torch.save(state, filename)
-            if self.config.writer.log_checkpoints:
-                self.writer.add_checkpoint(filename, str(self.checkpoint_dir.parent))
-            self.logger.info(f"Saving checkpoint: {filename} ...")
-        if save_best:
-            best_path = str(self.checkpoint_dir / "model_best.pth")
-            torch.save(state, best_path)
-            if self.config.writer.log_checkpoints:
-                self.writer.add_checkpoint(best_path, str(self.checkpoint_dir.parent))
-            self.logger.info("Saving current best: model_best.pth ...")
+        best_path = str(self.checkpoint_dir / "model_best.pth")
+        torch.save(state, filename)
+        torch.save(state, best_path)
+        if self.config.writer.log_checkpoints:
+            self.writer.add_checkpoint(filename, str(self.checkpoint_dir.parent))
+            self.writer.add_checkpoint(best_path, str(self.checkpoint_dir.parent))
+        self.logger.info(f"Saving checkpoint: {filename} ...")
+    def _from_pretrained(self, pretrained_path):
+        pretrained_path = str(pretrained_path)
+        if hasattr(self, "logger"):  # to support both trainer and inferencer
+            self.logger.info(f"Loading model weights from: {pretrained_path} ...")
+        else:
+            print(f"Loading model weights from: {pretrained_path} ...")
+        checkpoint = torch.load(pretrained_path, self.device, weights_only=False)
+
+
+        self.agent.policy_net.load_state_dict(checkpoint["policy_net"])
+        self.agent.target_net.load_state_dict(checkpoint["target_net"])

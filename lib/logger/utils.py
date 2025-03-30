@@ -24,3 +24,12 @@ def plot_durations(episode_durations):
     if is_ipython:
         display.clear_output(wait=True)
         display.display(plt.gcf())
+
+def plot_env(img):
+    plt.figure(3)
+    plt.imshow(img.cpu().squeeze(0).permute(1, 2, 0).numpy(),
+               interpolation='none')
+    plt.pause(0.001)
+    if is_ipython:
+        display.clear_output(wait=True)
+        display.display(plt.gcf())

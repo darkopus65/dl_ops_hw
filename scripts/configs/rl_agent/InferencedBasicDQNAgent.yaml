@@ -2,4 +2,4 @@ _target_: lib.rl_agent.BasicDQNAgent
 EPS_START: 0.9
 EPS_END: 0.05
 EPS_DECAY: 200
-IS_TRAIN: True
+IS_TRAIN: False
